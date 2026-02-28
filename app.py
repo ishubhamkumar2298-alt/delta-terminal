@@ -1,72 +1,53 @@
 import streamlit as st
 import pandas as pd
-import json, websocket, threading, time
+import requests
+import time
+import plotly.graph_objects as go
 
-st.set_page_config(page_title="Delta Debug Terminal", layout="wide")
+st.set_page_config(page_title="Delta Mobile Terminal", layout="wide")
 
-# Initialize Session State
-if 'logs' not in st.session_state: st.session_state.logs = []
-if 'start_time' not in st.session_state: st.session_state.start_time = time.time()
-if 'ws_status' not in st.session_state: st.session_state.ws_status = "Disconnected 🔴"
+# Persistent State
+if 'price_history' not in st.session_state:
+    st.session_state.price_history = []
+if 'start_time' not in st.session_state:
+    st.session_state.start_time = time.time()
 
-def log_event(msg):
-    timestamp = pd.Timestamp.now().strftime('%H:%M:%S')
-    st.session_state.logs.append(f"[{timestamp}] {msg}")
-    if len(st.session_state.logs) > 10: st.session_state.logs.pop(0)
+# --- THE BYPASS ENGINE ---
+def get_delta_price():
+    # Calling the public REST API (Works better on 5G than WebSockets)
+    url = "https://api.india.delta.exchange/v2/tickers/BTCUSD"
+    try:
+        res = requests.get(url, timeout=5).json()
+        price = float(res['result']['mark_price'])
+        return price
+    except Exception as e:
+        return None
 
-def on_message(ws, message):
-    data = json.loads(message)
-    if 'type' in data and data['type'] == 'v2/ticker':
-        st.session_state.ws_status = "Connected 🟢"
-        st.session_state.last_tick = time.time()
-        st.session_state.live_price = float(data['mark_price'])
+# --- UI ---
+st.title("🏛️ Delta India Mobile")
 
-def run_ws():
-    log_event("Attempting Handshake with Delta India...")
-    while True:
-        try:
-            ws = websocket.WebSocketApp(
-                "wss://socket.india.delta.exchange",
-                on_message=on_message,
-                on_error=lambda ws, e: log_event(f"Network Error: {e}"),
-                on_close=lambda ws, a, b: setattr(st.session_state, 'ws_status', "Disconnected 🔴")
-            )
-            def on_open(ws):
-                log_event("Door Opened! Sending BTCUSD Subscription...")
-                sub = {"type": "subscribe", "payload": {"channels": [{"name": "v2/ticker", "symbols": ["BTCUSD"]}]}}
-                ws.send(json.dumps(sub))
-            ws.on_open = on_open
-            ws.run_forever(ping_interval=10)
-        except Exception as e:
-            log_event(f"Crash: {e}. Retrying in 5s...")
-            time.sleep(5)
-
-if 'bg_thread' not in st.session_state:
-    threading.Thread(target=run_ws, daemon=True).start()
-    st.session_state.bg_thread = True
-
-# --- UI DISPLAY ---
-st.title("🏛️ Delta India Debugger")
-
-# Timer Logic
+# Timer
 elapsed = int(time.time() - st.session_state.start_time)
-col1, col2 = st.columns(2)
-col1.metric("Connection Status", st.session_state.ws_status)
-col2.metric("Elapsed Time", f"{elapsed}s", help="Time since the app started trying to connect.")
+st.sidebar.metric("System Uptime", f"{elapsed}s")
 
-# Debug Logs
-with st.expander("🔍 Detailed System Logs (Check here for errors)", expanded=True):
-    for entry in reversed(st.session_state.logs):
-        st.text(entry)
+# Data Fetching
+current_p = get_delta_price()
 
-# Live Price
-price = st.session_state.get('live_price', 0.0)
-if price > 0:
-    st.success(f"SUCCESS: BTCUSD at ₹{price:,.2f}")
-    st.balloons()
+if current_p:
+    st.session_state.ws_status = "Bypass Active 🔵"
+    st.session_state.price_history.append({'t': pd.Timestamp.now(), 'p': current_p})
+    if len(st.session_state.price_history) > 30: st.session_state.price_history.pop(0)
+    
+    st.metric("BTCUSD Price (REST)", f"₹{current_p:,.2f}")
+    
+    # Charting
+    df = pd.DataFrame(st.session_state.price_history)
+    fig = go.Figure(go.Scatter(x=df['t'], y=df['p'], mode='lines+markers', line=dict(color='#00ff00')))
+    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,t=0,b=0))
+    st.plotly_chart(fig, use_container_width=True)
 else:
-    st.warning("Still waiting for data... check the logs above for 'Network Error'.")
+    st.error("Network still blocking API. Try turning on 'Data Saver' or check your 5G signal.")
 
-# Auto-refresh the UI every 2 seconds to update the timer
+# Force update every 2 seconds
 time.sleep(2)
 st.rerun()
