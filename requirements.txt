@@ -1,4 +1,6 @@
 streamlit
-pandas
 requests
-lightweight-charts
+pandas
+streamlit-lightweight-charts==0.7.20
+streamlit-autorefresh
+websocket-client
