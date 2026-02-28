@@ -4,15 +4,14 @@ import requests
 import time
 from streamlit_lightweight_charts import renderLightweightCharts
 
-# --- 1. PRO TRADINGVIEW SETUP ---
-st.set_page_config(page_title="Delta Live Quant", layout="wide")
+# --- 1. PRO TRADINGVIEW CONFIG ---
+st.set_page_config(page_title="Delta Live Pro", layout="wide")
 
-# Persistent Candle Storage
 if 'candles' not in st.session_state:
     st.session_state.candles = []
 
-# --- 2. THE LIVE ENGINE (Sub-Second Polling) ---
-def fetch_now(symbol):
+# --- 2. THE BYPASS ENGINE (Sub-Second Polling) ---
+def fetch_live_price(symbol):
     url = f"https://api.india.delta.exchange/v2/tickers/{symbol}"
     try:
         res = requests.get(url, timeout=2).json()
@@ -20,28 +19,33 @@ def fetch_now(symbol):
     except: return None
 
 # --- 3. UI CONTROLS ---
-symbol = st.sidebar.selectbox("Market", ["BTCUSD", "ETHUSD", "SOLUSD"])
-# This allows for sub-second updates
-update_speed = st.sidebar.slider("Refresh (ms)", 100, 2000, 500) 
+with st.sidebar:
+    st.header("🎛️ Terminal Settings")
+    symbol = st.selectbox("Select Market", ["BTCUSD", "ETHUSD", "SOLUSD"])
+    # Set to 500ms for "Tick-by-Tick" feel without crashing
+    speed = st.slider("Refresh Speed (ms)", 100, 2000, 500)
 
-# Fetch Price
-price = fetch_now(symbol)
+# Fetch Current Data
+price = fetch_live_price(symbol)
 
 if price:
+    # Use standard Unix timestamp for TradingView compatibility
     ts = int(time.time())
-    new_candle = {'time': ts, 'open': price, 'high': price, 'low': price, 'close': price}
     
-    # Update or Add Candle
+    # Update or Create Candle
     if st.session_state.candles and st.session_state.candles[-1]['time'] == ts:
+        st.session_state.candles[-1]['high'] = max(st.session_state.candles[-1]['high'], price)
+        st.session_state.candles[-1]['low'] = min(st.session_state.candles[-1]['low'], price)
         st.session_state.candles[-1]['close'] = price
     else:
+        new_candle = {'time': ts, 'open': price, 'high': price, 'low': price, 'close': price}
         st.session_state.candles.append(new_candle)
-        if len(st.session_state.candles) > 50: st.session_state.candles.pop(0)
+        if len(st.session_state.candles) > 60: st.session_state.candles.pop(0)
 
-    # --- 4. TRADINGVIEW LIGHTWEIGHT CHART ---
+    # --- 4. RENDER TRADINGVIEW INTERFACE ---
     chart_options = {
         "layout": {"background": {"color": "#131722"}, "textColor": "#d1d4dc"},
-        "grid": {"vertLines": {"color": "#363c4e"}, "horzLines": {"color": "#363c4e"}},
+        "grid": {"vertLines": {"color": "#1e222d"}, "horzLines": {"color": "#1e222d"}},
         "timeScale": {"timeVisible": True, "secondsVisible": True}
     }
     
@@ -55,10 +59,9 @@ if price:
         }
     }]
 
-    st.subheader(f"LIVE {symbol}: ₹{price:,.2f}")
+    st.markdown(f"<h2 style='color:white;'>{symbol}: ₹{price:,.2f}</h2>", unsafe_allow_html=True)
     renderLightweightCharts([{"options": chart_options, "series": chart_series}], "main_chart")
 
-# --- 5. THE "HEARTBEAT" REFRESH ---
-# This forces the page to wake up without the "Blank Screen" flickering
-time.sleep(update_speed / 1000)
+# --- 5. THE LIVE HEARTBEAT ---
+time.sleep(speed / 1000)
 st.rerun()
