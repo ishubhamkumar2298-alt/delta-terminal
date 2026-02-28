@@ -2,66 +2,76 @@ import streamlit as st
 import pandas as pd
 import requests
 import time
-from streamlit_lightweight_charts import renderLightweightCharts
 
-# --- 1. PRO TRADINGVIEW CONFIG ---
-st.set_page_config(page_title="Delta Live Pro", layout="wide")
+# --- 1. PRO TERMINAL LAYOUT ---
+st.set_page_config(page_title="Delta Pro Quant", layout="wide")
 
-if 'candles' not in st.session_state:
-    st.session_state.candles = []
+# Custom Styling to match the TradingView 'Dark Mode'
+st.markdown("""
+    <style>
+    .main { background-color: #131722; }
+    [data-testid="stHeader"] { background-color: #131722; }
+    [data-testid="stMetricValue"] { color: #00ff00 !important; font-size: 32px; }
+    div.block-container { padding-top: 1rem; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# --- 2. THE BYPASS ENGINE (Sub-Second Polling) ---
-def fetch_live_price(symbol):
-    url = f"https://api.india.delta.exchange/v2/tickers/{symbol}"
+# --- 2. THE TOP BAR (INSTRUMENT & TIMEFRAME) ---
+# This puts selectors on the main page, not the sidebar
+col1, col2, col3 = st.columns([2, 2, 8])
+
+with col1:
+    symbol = st.selectbox("Symbol", ["BTCUSD", "ETHUSD", "SOLUSD"], label_visibility="collapsed")
+with col2:
+    timeframe = st.selectbox("Time", ["1m", "5m", "15m", "1H"], label_visibility="collapsed")
+
+# --- 3. THE LIVE ENGINE ---
+def fetch_now(s):
+    url = f"https://api.india.delta.exchange/v2/tickers/{s}"
     try:
         res = requests.get(url, timeout=2).json()
         return float(res['result']['mark_price'])
     except: return None
 
-# --- 3. UI CONTROLS ---
-with st.sidebar:
-    st.header("🎛️ Terminal Settings")
-    symbol = st.selectbox("Select Market", ["BTCUSD", "ETHUSD", "SOLUSD"])
-    # Set to 500ms for "Tick-by-Tick" feel without crashing
-    speed = st.slider("Refresh Speed (ms)", 100, 2000, 500)
+# Initialize OHLC history
+if 'ohlc' not in st.session_state:
+    st.session_state.ohlc = []
 
-# Fetch Current Data
-price = fetch_live_price(symbol)
+price = fetch_now(symbol)
 
 if price:
-    # Use standard Unix timestamp for TradingView compatibility
     ts = int(time.time())
-    
-    # Update or Create Candle
-    if st.session_state.candles and st.session_state.candles[-1]['time'] == ts:
-        st.session_state.candles[-1]['high'] = max(st.session_state.candles[-1]['high'], price)
-        st.session_state.candles[-1]['low'] = min(st.session_state.candles[-1]['low'], price)
-        st.session_state.candles[-1]['close'] = price
+    # Simple logic to build candles from live ticks
+    if st.session_state.ohlc and st.session_state.ohlc[-1]['time'] == ts:
+        st.session_state.ohlc[-1]['close'] = price
     else:
-        new_candle = {'time': ts, 'open': price, 'high': price, 'low': price, 'close': price}
-        st.session_state.candles.append(new_candle)
-        if len(st.session_state.candles) > 60: st.session_state.candles.pop(0)
+        st.session_state.ohlc.append({'time': ts, 'open': price, 'high': price, 'low': price, 'close': price})
+        if len(st.session_state.ohlc) > 60: st.session_state.ohlc.pop(0)
 
-    # --- 4. RENDER TRADINGVIEW INTERFACE ---
-    chart_options = {
-        "layout": {"background": {"color": "#131722"}, "textColor": "#d1d4dc"},
-        "grid": {"vertLines": {"color": "#1e222d"}, "horzLines": {"color": "#1e222d"}},
-        "timeScale": {"timeVisible": True, "secondsVisible": True}
-    }
+    # Display Price Metric like a real ticker
+    st.metric(label=f"{symbol} • {timeframe}", value=f"₹{price:,.2f}")
+
+    # --- 4. THE CHART (Using Plotly for high-speed interaction) ---
+    import plotly.graph_objects as go
     
-    chart_series = [{
-        "type": "Candlestick",
-        "data": st.session_state.candles,
-        "options": {
-            "upColor": "#26a69a", "downColor": "#ef5350",
-            "borderUpColor": "#26a69a", "borderDownColor": "#ef5350",
-            "wickUpColor": "#26a69a", "wickDownColor": "#ef5350",
-        }
-    }]
+    fig = go.Figure(data=[go.Candlestick(
+        x=[pd.to_datetime(d['time'], unit='s') for d in st.session_state.ohlc],
+        open=[d['open'] for d in st.session_state.ohlc],
+        high=[d['high'] for d in st.session_state.ohlc],
+        low=[d['low'] for d in st.session_state.ohlc],
+        close=[d['close'] for d in st.session_state.ohlc],
+        increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+    )])
 
-    st.markdown(f"<h2 style='color:white;'>{symbol}: ₹{price:,.2f}</h2>", unsafe_allow_html=True)
-    renderLightweightCharts([{"options": chart_options, "series": chart_series}], "main_chart")
+    fig.update_layout(
+        template="plotly_dark", height=600,
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor='#131722', plot_bgcolor='#131722',
+        margin=dict(l=0, r=0, t=0, b=0)
+    )
+    
+    st.plotly_chart(fig, use_container_width=True, config={'displayModeBar': False})
 
-# --- 5. THE LIVE HEARTBEAT ---
-time.sleep(speed / 1000)
+# --- 5. HEARTBEAT REFRESH ---
+time.sleep(0.5)
 st.rerun()
