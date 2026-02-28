@@ -3,51 +3,97 @@ import pandas as pd
 import requests
 import time
 import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-st.set_page_config(page_title="Delta Mobile Terminal", layout="wide")
+# --- 1. CONFIG & STYLING ---
+st.set_page_config(page_title="Delta Pro Quant", layout="wide")
+st.markdown("""
+    <style>
+    .main { background-color: #131722; color: #d1d4dc; }
+    div[data-testid="stSidebar"] { background-color: #1e222d; border-right: 1px solid #363c4e; }
+    </style>
+    """, unsafe_allow_html=True)
 
-# Persistent State
-if 'price_history' not in st.session_state:
-    st.session_state.price_history = []
-if 'start_time' not in st.session_state:
-    st.session_state.start_time = time.time()
+# --- 2. DATA ENGINE ---
+if 'history' not in st.session_state:
+    st.session_state.history = pd.DataFrame(columns=['Time', 'Open', 'High', 'Low', 'Close', 'Vol'])
 
-# --- THE BYPASS ENGINE ---
-def get_delta_price():
-    # Calling the public REST API (Works better on 5G than WebSockets)
-    url = "https://api.india.delta.exchange/v2/tickers/BTCUSD"
+def fetch_delta_data(symbol):
+    url = f"https://api.india.delta.exchange/v2/tickers/{symbol}"
     try:
         res = requests.get(url, timeout=5).json()
-        price = float(res['result']['mark_price'])
-        return price
+        data = res['result']
+        return {
+            'price': float(data['mark_price']),
+            '24h_vol': float(data['quotes']['volume_24h'])
+        }
+    except: return None
+
+# --- 3. SIDEBAR: INSTRUMENT & LOGIC ---
+st.sidebar.title("🛠️ Terminal Control")
+symbol = st.sidebar.selectbox("Market", ["BTCUSD", "ETHUSD", "SOLUSD", "XRPUSD"])
+timeframe = st.sidebar.select_slider("Timeframe", options=["1m", "5m", "15m"])
+
+st.sidebar.markdown("---")
+st.sidebar.subheader("📝 Indicator Compiler")
+custom_math = st.sidebar.text_area("Python Math (use 'df' for data):", value="""# Simple Moving Average
+df['Indicator'] = df['Close'].rolling(window=5).mean()
+""", height=200)
+
+# --- 4. PROCESSING ---
+raw = fetch_delta_data(symbol)
+
+if raw:
+    # Update Local OHLCV (1-minute bars simplified)
+    ts = pd.Timestamp.now().floor('min')
+    price = raw['price']
+    
+    if not st.session_state.history.empty and st.session_state.history.iloc[-1]['Time'] == ts:
+        # Update current candle
+        idx = st.session_state.history.index[-1]
+        st.session_state.history.at[idx, 'High'] = max(st.session_state.history.at[idx, 'High'], price)
+        st.session_state.history.at[idx, 'Low'] = min(st.session_state.history.at[idx, 'Low'], price)
+        st.session_state.history.at[idx, 'Close'] = price
+    else:
+        # Create new candle
+        new_candle = {'Time': ts, 'Open': price, 'High': price, 'Low': price, 'Close': price, 'Vol': raw['24h_vol']}
+        st.session_state.history = pd.concat([st.session_state.history, pd.DataFrame([new_candle])], ignore_index=True).tail(100)
+
+    # 5. RUN CUSTOM INDICATOR
+    df = st.session_state.history.copy()
+    try:
+        exec(custom_math)
     except Exception as e:
-        return None
+        st.sidebar.error(f"Logic Error: {e}")
 
-# --- UI ---
-st.title("🏛️ Delta India Mobile")
-
-# Timer
-elapsed = int(time.time() - st.session_state.start_time)
-st.sidebar.metric("System Uptime", f"{elapsed}s")
-
-# Data Fetching
-current_p = get_delta_price()
-
-if current_p:
-    st.session_state.ws_status = "Bypass Active 🔵"
-    st.session_state.price_history.append({'t': pd.Timestamp.now(), 'p': current_p})
-    if len(st.session_state.price_history) > 30: st.session_state.price_history.pop(0)
+    # --- 6. TRADINGVIEW INTERFACE ---
+    st.title(f"📊 {symbol} • {timeframe} Terminal")
     
-    st.metric("BTCUSD Price (REST)", f"₹{current_p:,.2f}")
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, row_heights=[0.7, 0.3], vertical_spacing=0.03)
+
+    # Main Candlestick Chart
+    fig.add_trace(go.Candlestick(
+        x=df['Time'], open=df['Open'], high=df['High'], low=df['Low'], close=df['Close'],
+        name="Price", increasing_line_color='#26a69a', decreasing_line_color='#ef5350'
+    ), row=1, col=1)
+
+    # Custom Indicator Overlay
+    if 'Indicator' in df.columns:
+        fig.add_trace(go.Scatter(x=df['Time'], y=df['Indicator'], name="Custom Logic", line=dict(color='#2962ff', width=2)), row=1, col=1)
+
+    # Volume / Order Flow Bars
+    fig.add_trace(go.Bar(x=df['Time'], y=df['Vol'], name="Volume", marker_color='#363c4e'), row=2, col=1)
+
+    fig.update_layout(
+        template="plotly_dark", height=800,
+        xaxis_rangeslider_visible=False,
+        paper_bgcolor='#131722', plot_bgcolor='#131722',
+        margin=dict(l=10, r=10, t=10, b=10)
+    )
     
-    # Charting
-    df = pd.DataFrame(st.session_state.price_history)
-    fig = go.Figure(go.Scatter(x=df['t'], y=df['p'], mode='lines+markers', line=dict(color='#00ff00')))
-    fig.update_layout(template="plotly_dark", height=400, margin=dict(l=0,r=0,t=0,b=0))
     st.plotly_chart(fig, use_container_width=True)
-else:
-    st.error("Network still blocking API. Try turning on 'Data Saver' or check your 5G signal.")
+    st.metric("Last Price", f"₹{price:,.2f}", delta=f"{timeframe} bar tracking")
 
-# Force update every 2 seconds
+# Loop refresh
 time.sleep(2)
 st.rerun()
